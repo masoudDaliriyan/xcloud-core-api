@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	container "github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/container"
 	"log"
 
 	"github.com/docker/docker/client"
