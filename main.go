@@ -1,55 +1,99 @@
 package main
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
+	"io/ioutil"
+	"log"
 	"os"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/client"
 )
 
-func main() {
-	// Specify the directory containing your Dockerfile
-	buildContextDir := "./repos/simple-http-server"
-	dockerfilePath := "Dockerfile" // Assuming the Dockerfile is named "Dockerfile" in the build context directory
+func buildImage(cli *client.Client, tags []string, dockerfile string) error {
+	ctx := context.Background()
 
-	// Create a Docker client
-	cli, err := client.NewClientWithOpts(client.FromEnv)
+	// Open the Dockerfile
+	dockerFileReader, err := os.Open(dockerfile)
 	if err != nil {
-		fmt.Printf("Error creating Docker client: %v\n", err)
-		return
+		return err
+	}
+	defer dockerFileReader.Close()
+
+	// Read the actual Dockerfile content
+	dockerFileContent, err := ioutil.ReadAll(dockerFileReader)
+	if err != nil {
+		return err
 	}
 
-	// Open the project directory
-	buildContext, err := os.Open(buildContextDir)
-	if err != nil {
-		fmt.Printf("Error opening build context: %v\n", err)
-		return
-	}
-	defer buildContext.Close()
+	// Create a buffer
+	buf := new(bytes.Buffer)
+	tw := tar.NewWriter(buf)
 
-	// Build Docker image
+	// Make a TAR header for the Dockerfile
+	tarHeader := &tar.Header{
+		Name: dockerfile,
+		Size: int64(len(dockerFileContent)),
+	}
+	if err := tw.WriteHeader(tarHeader); err != nil {
+		return err
+	}
+
+	// Write the Dockerfile content to the TAR file
+	if _, err := tw.Write(dockerFileContent); err != nil {
+		return err
+	}
+
+	// Close the TAR writer
+	if err := tw.Close(); err != nil {
+		return err
+	}
+
+	// Create a TAR reader from the buffer
+	tarReader := bytes.NewReader(buf.Bytes())
+
+	// Define the build options
 	buildOptions := types.ImageBuildOptions{
-		Tags:       []string{"simple-http-server:latest"},
-		Dockerfile: dockerfilePath,
-		Context:    buildContext,
+		Tags:       tags,
+		Dockerfile: dockerfile,
+		Context:    tarReader,
+		Remove:     true,
 	}
-	resp, err := cli.ImageBuild(context.Background(), buildContext, buildOptions)
-	if err != nil {
-		fmt.Printf("Error building Docker image: %v\n", err)
-		return
-	}
-	defer resp.Body.Close()
 
-	// Print build output
+	// Build the image
+	imageBuildResponse, err := cli.ImageBuild(ctx, tarReader, buildOptions)
+	if err != nil {
+		return err
+	}
+	defer imageBuildResponse.Body.Close()
+
+	// Print the build output
 	fmt.Println("Building Docker image...")
-	_, err = io.Copy(os.Stdout, resp.Body)
+	_, err = io.Copy(os.Stdout, imageBuildResponse.Body)
 	if err != nil {
-		fmt.Printf("Error printing build output: %v\n", err)
-		return
+		return err
 	}
 
-	fmt.Println("Docker image built successfully")
+	return nil
+}
+
+func main() {
+	cli, err := client.NewEnvClient()
+	if err != nil {
+		log.Fatalf("Unable to create docker client: %s", err)
+	}
+
+	// Define image tags and Dockerfile location
+	tags := []string{"this_is_an_image_name"}
+	dockerfile := "./repos/simple-http-server/Dockerfile"
+
+	// Build the Docker image
+	err = buildImage(cli, tags, dockerfile)
+	if err != nil {
+		log.Fatalf("Error building Docker image: %s", err)
+	}
 }
