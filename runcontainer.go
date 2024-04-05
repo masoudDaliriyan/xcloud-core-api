@@ -1,81 +1,80 @@
 package main
 
 import (
-	"context"
-	"fmt"
-	"github.com/docker/docker/api/types/container"
-	"log"
-
-	"github.com/docker/docker/client"
-	"github.com/docker/go-connections/nat"
+    "bytes"
+    "encoding/json"
+    "fmt"
+    "io/ioutil"
+    "log"
+    "net/http"
 )
 
-func runContainer(cli *client.Client, imagename, containername string, inputEnv []string) error {
-	port := "8000"   // Container's port
-	hostPort := "80" // Host's port
+func runContainer(imagename, containername string, inputEnv []string) error {
+    // Define the Docker Engine API endpoint
+    url := "http://127.0.0.1:12345/containers/create"
 
-	newport, err := nat.NewPort("tcp", port)
-	if err != nil {
-		return fmt.Errorf("unable to create docker port: %v", err)
-	}
+    // Prepare the request payload
+    body := map[string]interface{}{
+        "Image":        imagename,
+        "Env":          inputEnv,
+        "ExposedPorts": map[string]struct{}{"8000/tcp": {}},
+        "HostConfig": map[string]interface{}{
+            "PortBindings": map[string][]map[string]string{
+                "8000/tcp": {
+                    {"HostIP": "0.0.0.0", "HostPort": "80"},
+                },
+            },
+            "RestartPolicy": map[string]interface{}{"Name": "always"},
+            "LogConfig":     map[string]string{"Type": "json-file"},
+        },
+    }
 
-	hostConfig := &container.HostConfig{
-		PortBindings: nat.PortMap{
-			newport: []nat.PortBinding{
-				{
-					HostIP:   "0.0.0.0",
-					HostPort: hostPort,
-				},
-			},
-		},
-		RestartPolicy: container.RestartPolicy{
-			Name: "always",
-		},
-		LogConfig: container.LogConfig{
-			Type:   "json-file",
-			Config: map[string]string{},
-		},
-	}
+    // Convert the payload to JSON
+    payload, err := json.Marshal(body)
+    if err != nil {
+        return fmt.Errorf("unable to marshal JSON payload: %v", err)
+    }
 
-	config := &container.Config{
-		Image:        imagename,
-		Env:          inputEnv,
-		ExposedPorts: nat.PortSet{newport: struct{}{}},
-		Hostname:     fmt.Sprintf("%s-hostnameexample", imagename),
-	}
+    // Send the HTTP POST request to create the container
+    resp, err := http.Post(url, "application/json", bytes.NewBuffer(payload))
+    if err != nil {
+        return fmt.Errorf("unable to create container: %v", err)
+    }
+    defer resp.Body.Close()
 
-	cont, err := cli.ContainerCreate(
-		context.Background(),
-		config,
-		hostConfig,
-		nil, // No need for networking config in this case
-		nil, // No need for platform spec
-		containername,
-	)
-	if err != nil {
-		return fmt.Errorf("unable to create container: %v", err)
-	}
+    // Read the response body
+    respBody, err := ioutil.ReadAll(resp.Body)
+    if err != nil {
+        return fmt.Errorf("unable to read response body: %v", err)
+    }
 
-	err = cli.ContainerStart(context.Background(), cont.ID, container.StartOptions{})
-	if err != nil {
-		return fmt.Errorf("unable to start container: %v", err)
-	}
+    // Check if the request was successful
+    if resp.StatusCode != http.StatusCreated {
+        return fmt.Errorf("failed to create container: %s", respBody)
+    }
 
-	log.Printf("Container %s is created and running", cont.ID)
-	return nil
+    // Extract the container ID from the response
+    var createResp map[string]interface{}
+    if err := json.Unmarshal(respBody, &createResp); err != nil {
+        return fmt.Errorf("unable to unmarshal response body: %v", err)
+    }
+
+    containerID, ok := createResp["Id"].(string)
+    if !ok {
+        return fmt.Errorf("unable to extract container ID from response")
+    }
+
+    log.Printf("Container %s is created and running", containerID)
+    return nil
 }
 
 func main() {
-	cli, err := client.NewEnvClient()
-	if err != nil {
-		log.Fatalf("Unable to create docker client: %v", err)
-	}
+    imagename := "this_is_an_image_name"
+    containername := "this_is_an_image_name"
+    inputEnv := []string{"LISTENINGPORT=8000"} // Set environment variable
 
-	imagename := "this_is_an_image_name"
-	containername := "this_is_an_image_name"
-	inputEnv := []string{"LISTENINGPORT=8000"} // Set environment variable
-	err = runContainer(cli, imagename, containername, inputEnv)
-	if err != nil {
-		log.Fatalf("Error running container: %v", err)
-	}
+    err := runContainer(imagename, containername, inputEnv)
+    if err != nil {
+        log.Fatalf("Error running container: %v", err)
+    }
 }
